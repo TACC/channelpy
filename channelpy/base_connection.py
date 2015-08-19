@@ -3,6 +3,10 @@ class RetryException(Exception):
     pass
 
 
+class TimeoutException(Exception):
+    pass
+
+
 class AbstractConnection(object):
 
     def connect(self):
@@ -62,11 +66,11 @@ class AbstractConnection(object):
         :type pubsub: pubsub
         """
 
-    def get(self, queue):
-        """Non-blocking get.  Return None if empty.
+    def get(self, queue, timeout=float('inf')):
+        """Blocking get.
 
         :type queue: queue
-        :rtype: Optional[T]
+        :rtype: T
         """
 
     def put(self, msg, queue):

@@ -4,11 +4,12 @@ import uuid
 import os
 import errno
 import threading
+from functools import partial
 
 import yaml
 
 from .exceptions import *
-from .base_connection import RetryException
+from .base_connection import RetryException, TimeoutException
 from .connections import connections
 
 
@@ -30,7 +31,7 @@ class Queue(object):
         self.connection.connect()
         self._queue = self.connection.create_queue(self.name)
         self._event_queue = self.connection.create_local_queue()
-        self._pubsub = self.connection.create_pubsub(self.name)
+        self._pubsub = self.connection.create_pubsub('_{}'.format(self.name))
         self.connection.subscribe(self._event_queue, self._pubsub)
 
     def close(self):
@@ -59,8 +60,9 @@ class Queue(object):
         t.start()
 
     def _check_for_events(self):
-        ev = self.connection.get(self._event_queue)
-        if ev is None:
+        try:
+            ev = self.connection.get(self._event_queue, timeout=0)
+        except TimeoutException:
             return
         obj = json.loads(ev.decode('utf-8'))
         if obj == 'close':
@@ -96,12 +98,12 @@ class Queue(object):
 
         return wrapper
 
-    def _get(self):
+    def _get(self, timeout=float('inf')):
         self._check_for_events()
-        return self.connection.get(self._queue)
+        return self.connection.get(self._queue, timeout=timeout)
 
-    def get(self):
-        return self._retrying(self._get)()
+    def get(self, timeout=float('inf')):
+        return self._retrying(partial(self._get, timeout=timeout))()
 
     def _put(self, msg):
         self._check_for_events()
@@ -240,17 +242,12 @@ class Channel(object):
 
     @checking_events
     def get(self, timeout=float('inf')):
-        start = time.time()
-        while True:
-            if self._queue is None:
-                raise ChannelClosedException()
-            msg = self._queue.get()
-            if msg is not None:
-                return self._process(msg.decode('utf-8'))
-            if time.time() - start > timeout:
-                raise ChannelTimeoutException()
-            time.sleep(self.POLL_FREQUENCY)
-
+        try:
+            msg = self._queue.get(timeout=timeout)
+            return self._process(msg.decode('utf-8'))
+        except TimeoutException:
+            raise ChannelTimeoutException()
+    
     @staticmethod
     def _process(msg):
         return json.loads(msg, object_hook=as_channel)

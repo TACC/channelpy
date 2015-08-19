@@ -1,9 +1,42 @@
+import queue
+import threading
+
 from .base_connection import AbstractConnection, RetryException
+from .base_connection import TimeoutException
 
 import rabbitpy
 import rabbitpy.exceptions
 
 from .exceptions import ChannelClosedException
+
+
+def feed(python_queue, rabbit_queue):
+    g = rabbit_queue.consume()
+    for elt in g:
+        python_queue.put(elt)
+
+
+class TimeoutQueue(object):
+
+    def __init__(self, rabbit_queue):
+        self.rabbit_queue = rabbit_queue
+        self.q = queue.Queue()
+        self._thread = threading.Thread(
+            target=feed, args=(self.q, self.rabbit_queue))
+        self._thread.name = rabbit_queue.name
+        self._thread.daemon = True
+        self._thread.start()
+        
+    def get(self, timeout=float('inf')):
+        if timeout == float('inf'):
+            timeout = None
+        try:
+            return self.q.get(timeout=timeout)
+        except queue.Empty:
+            raise TimeoutException()
+
+    def put(self, value):
+        pass
 
 
 class RabbitConnection(AbstractConnection):
@@ -34,7 +67,7 @@ class RabbitConnection(AbstractConnection):
         """
         _queue = rabbitpy.Queue(self._ch, name=name, durable=True)
         _queue.declare()
-        return _queue
+        return TimeoutQueue(_queue)
 
     def create_local_queue(self):
         """Create a local queue
@@ -43,7 +76,7 @@ class RabbitConnection(AbstractConnection):
         """
         _queue = rabbitpy.Queue(self._ch, exclusive=True)
         _queue.declare()
-        return _queue
+        return TimeoutQueue(_queue)
 
     def create_pubsub(self, name):
         """Create a fanout exchange.
@@ -56,7 +89,7 @@ class RabbitConnection(AbstractConnection):
         return _exchange
 
     def subscribe(self, queue, pubsub):
-        queue.bind(pubsub)
+        queue.rabbit_queue.bind(pubsub)
 
     def publish(self, msg, pubsub):
         _msg = rabbitpy.Message(self._ch, msg)
@@ -64,7 +97,7 @@ class RabbitConnection(AbstractConnection):
 
     def delete_queue(self, queue):
         try:
-            queue.delete()
+            queue.rabbit_queue.delete()
         except rabbitpy.exceptions.RabbitpyException:
             pass
 
@@ -74,15 +107,13 @@ class RabbitConnection(AbstractConnection):
         except rabbitpy.exceptions.RabbitpyException:
             pass
 
-    def get(self, queue):
-        """Non-blocking get.  Return None if empty.
+    def get(self, queue, timeout=float('inf')):
+        """Blocking get.
 
         :type queue: queue
-        :rtype: Optional[T]
+        :rtype: T
         """
-        _msg = queue.get()
-        if _msg is None:
-            return None
+        _msg = queue.get(timeout=timeout)
         _msg.ack()
         return _msg.body
 
@@ -93,7 +124,7 @@ class RabbitConnection(AbstractConnection):
         :type queue: queue
         """
         _msg = rabbitpy.Message(self._ch, msg, {})
-        _msg.publish('', queue.name)
+        _msg.publish('', routing_key=queue.rabbit_queue.name)
 
     def retrying(self, f):
         def wrapper(*args, **kwargs):
