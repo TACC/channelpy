@@ -4,6 +4,5 @@ ipython==3.2.1
 pamqp==1.6.1
 py==1.4.30
 pytest==2.7.2
--e git://github.com/gmr/rabbitpy.git@b2c33d5ccade60977347d1ef6cce4dd5fb403c4c#egg=rabbitpy
+rabbitpy==1.0.0
 six==1.9.0
-typing==0.0
