@@ -1,4 +1,4 @@
-from .chan import Channel
+from .chan import Channel, BasicChannel
 from .exceptions import *
 from .base_connection import AbstractConnection, RetryException
 from .rabbitpy_connection import RabbitConnection
@@ -7,6 +7,7 @@ from .rabbitpy_connection import RabbitConnection
 __all__ = [
     # Main class for channels
     'Channel',
+    'BasicChannel',
 
     # Channel exceptions
     'ChannelException',

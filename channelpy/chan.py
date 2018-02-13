@@ -17,7 +17,10 @@ from .connections import connections
 CONFIG_FILE = '~/.channelpy.yml'
 
 
-class Queue(object):
+class BasicQueue(object):
+    """
+    Minimal queue functionality when events and pub/sub are not needed.
+    """
 
     DEFAULT_RETRY_TIMEOUT = 10
 
@@ -31,9 +34,6 @@ class Queue(object):
     def _reconnect(self):
         self.connection.connect()
         self._queue = self.connection.create_queue(self.name)
-        self._event_queue = self.connection.create_local_queue()
-        self._pubsub = self.connection.create_pubsub(self.name)
-        self.connection.subscribe(self._event_queue, self._pubsub)
 
     def close(self):
         """Close this instance of the channel."""
@@ -44,21 +44,72 @@ class Queue(object):
         t = threading.Thread(target=_close, args=(self,))
         t.start()
 
-    def event(self, ev):
-        """Publish an event."""
-
-        self.connection.publish(ev, self._pubsub)
-
     def delete(self):
         """Delete the queue completely."""
 
         def _delete(this):
             this.connection.delete_queue(this._queue)
-            this.connection.delete_pubsub(this._pubsub)
             this.close()
 
         t = threading.Thread(target=_delete, args=(self,))
         t.start()
+
+    def _try_until_timeout(self, f, timeout=10, sleep=0.01):
+        _f = self.connection.retrying(f)
+
+        def wrapper(*args, **kwargs):
+            start = time.time()
+            while True:
+                try:
+                    return _f(*args, **kwargs)
+                except RetryException:
+                    if time.time() - start > timeout:
+                        raise ChannelTimeoutException()
+                    time.sleep(sleep)
+
+        return wrapper
+
+    def _get(self):
+        return self.connection.get(self._queue)
+
+    def get(self):
+        return self._retrying(self._get)()
+
+    def _put(self, msg):
+        self.connection.put(msg, self._queue)
+
+    def put(self, msg):
+        self._retrying(self._put)(msg)
+
+    def _retrying(self, f):
+        _f = self.connection.retrying(f)
+
+        def wrapper(*args, **kwargs):
+            try:
+                return _f(*args, **kwargs)
+            except RetryException:
+                self._try_until_timeout(self._reconnect,
+                                        timeout=self.retry_timeout)()
+                return f(*args, **kwargs)
+
+        return wrapper
+
+
+class Queue(BasicQueue):
+
+    DEFAULT_RETRY_TIMEOUT = 10
+
+    def _reconnect(self):
+        self.connection.connect()
+        self._queue = self.connection.create_queue(self.name)
+        self._event_queue = self.connection.create_local_queue()
+        self._pubsub = self.connection.create_pubsub(self.name)
+        self.connection.subscribe(self._event_queue, self._pubsub)
+
+    def event(self, ev):
+        """Publish an event."""
+
+        self.connection.publish(ev, self._pubsub)
 
     def _check_for_events(self):
         ev = self.connection.get(self._event_queue)
@@ -85,32 +136,24 @@ class Queue(object):
 
         return wrapper
 
-    def _retrying(self, f):
-        _f = self.connection.retrying(f)
-
-        def wrapper(*args, **kwargs):
-            try:
-                return _f(*args, **kwargs)
-            except RetryException:
-                self._try_until_timeout(self._reconnect,
-                                        timeout=self.retry_timeout)()
-                return f(*args, **kwargs)
-
-        return wrapper
-
     def _get(self):
         self._check_for_events()
         return self.connection.get(self._queue)
-
-    def get(self):
-        return self._retrying(self._get)()
 
     def _put(self, msg):
         self._check_for_events()
         self.connection.put(msg, self._queue)
 
-    def put(self, msg):
-        self._retrying(self._put)(msg)
+    def delete(self):
+        """Delete the queue completely."""
+
+        def _delete(this):
+            this.connection.delete_queue(this._queue)
+            this.connection.delete_pubsub(this._pubsub)
+            this.close()
+
+        t = threading.Thread(target=_delete, args=(self,))
+        t.start()
 
 
 class ChannelEncoder(json.JSONEncoder):
@@ -140,7 +183,7 @@ def checking_events(f):
     return wrapper
 
 
-class Channel(object):
+class BaseChannel(object):
 
     POLL_FREQUENCY = 0.01  # seconds
 
@@ -175,8 +218,6 @@ class Channel(object):
         self.connection_args.update(kwargs)
         self.connection = self.connection_type(**self.connection_args)
         self._rm = rm
-        self._queue = Queue(self.name, self.connection,
-                            retry_timeout=self.retry_timeout)
 
     def to_json(self):
         return {
@@ -275,30 +316,6 @@ class Channel(object):
         self._queue.put(
             json.dumps(value, cls=ChannelEncoder).encode('utf-8'))
 
-    def close(self):
-        if self._queue is None:
-            raise ChannelClosedException()
-        self._queue.close()
-        self._queue = None
-
-    def delete(self):
-        if self._queue is None:
-            raise ChannelClosedException()
-        self._queue.delete()
-        self.close()
-
-    def close_all(self):
-        if self._queue is None:
-            raise ChannelClosedException()
-        self._queue.event(
-            json.dumps('close').encode('utf-8'))
-        self.close()
-
-    def event(self, obj):
-        if self._queue is None:
-            raise ChannelClosedException()
-        self._queue.event(json.dumps(obj).encode('utf-8'))
-
     def put_sync(self, value, timeout=float('inf')):
         """Synchronous put.
 
@@ -317,3 +334,56 @@ class Channel(object):
                 'reply_to': ch
             })
             return ch.get(timeout=timeout)
+
+    def close(self):
+        if self._queue is None:
+            raise ChannelClosedException()
+        self._queue.close()
+        self._queue = None
+
+    def delete(self):
+        if self._queue is None:
+            raise ChannelClosedException()
+        self._queue.delete()
+        self.close()
+
+
+class BasicChannel(BaseChannel):
+
+    def __init__(self, name=None, rm=False,
+                 connection_type=None,
+                 retry_timeout=None,
+                 **kwargs):
+        super().__init__(name, rm, connection_type, retry_timeout, **kwargs)
+        self._queue = BasicQueue(self.name, self.connection,
+                                 retry_timeout=self.retry_timeout)
+
+
+class Channel(BaseChannel):
+
+    def __init__(self, name=None, rm=False,
+                 connection_type=None,
+                 retry_timeout=None,
+                 **kwargs):
+        """
+        :type name: str
+        :type rm: bool
+        :type connection_type: AbstractConnection
+        :type kwargs: Dict
+        """
+        super().__init__(name, rm, connection_type, retry_timeout, **kwargs)
+        self._queue = Queue(self.name, self.connection,
+                            retry_timeout=self.retry_timeout)
+
+    def close_all(self):
+        if self._queue is None:
+            raise ChannelClosedException()
+        self._queue.event(
+            json.dumps('close').encode('utf-8'))
+        self.close()
+
+    def event(self, obj):
+        if self._queue is None:
+            raise ChannelClosedException()
+        self._queue.event(json.dumps(obj).encode('utf-8'))
+
