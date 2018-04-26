@@ -305,6 +305,14 @@ class BaseChannel(object):
                 raise ChannelTimeoutException()
             time.sleep(self.POLL_FREQUENCY)
 
+    def get_one(self):
+        """Blocking method to get a single message without polling."""
+        if self._queue is None:
+            raise ChannelClosedException()
+        for msg in self._queue._queue:
+            msg.ack()
+            return self._process(msg.body)
+
     @staticmethod
     def _process(msg):
         return json.loads(msg, object_hook=as_channel)
