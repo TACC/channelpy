@@ -311,7 +311,7 @@ class BaseChannel(object):
             raise ChannelClosedException()
         for msg in self._queue._queue:
             msg.ack()
-            return self._process(msg.body)
+            return self._process(msg.body.decode('utf-8'))
 
     @staticmethod
     def _process(msg):
