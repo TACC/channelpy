@@ -19,6 +19,7 @@ class RabbitConnection(AbstractConnection):
 
         self._conn = rabbitpy.Connection(self._uri)
         self._ch = self._conn.channel()
+        self._ch.prefetch_count(value=1, all_channels=True)
 
     def close(self):
         """Close this instance of the connection. """
