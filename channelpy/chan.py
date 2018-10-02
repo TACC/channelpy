@@ -309,9 +309,8 @@ class BaseChannel(object):
         """Blocking method to get a single message without polling."""
         if self._queue is None:
             raise ChannelClosedException()
-        for msg in self._queue._queue:
-            msg.ack()
-            return self._process(msg.body.decode('utf-8'))
+        for msg in self._queue._queue.consume(prefetch=1):
+            return self._process(msg.body.decode('utf-8')), msg
 
     @staticmethod
     def _process(msg):
